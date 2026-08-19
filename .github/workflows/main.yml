@@ -5,33 +5,33 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:          # Allow manual triggering
+  workflow_dispatch:
 
 jobs:
   build:
-    name: Build Debug APK
-    runs-on: ubuntu-latest    # GitHub's Ubuntu runner (20.04/22.04)
+    runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout the repository including submodules
-      - name: Checkout repository
+      - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive   # Fetch all git submodules
+          submodules: recursive
 
-      # 2. Set up Java (Winlator usually needs JDK 17)
+      # Extra safety: make sure submodules are fully initialised
+      - name: Update submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth=1
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 3. Set up Android SDK (includes required platform-tools and build-tools)
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # 4. Install system dependencies needed for native builds
-      #    (Adjust this list if your fork requires different packages)
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -48,10 +48,24 @@ jobs:
             python3-pip \
             unzip zip
 
-      # 5. (Optional) Run a script to download prebuilt Wine/Box64 binaries
-      #    Many Winlator forks include a script like "download_dependencies.sh"
-      #    If your repo has one, execute it here. Otherwise remove this step.
-      - name: Download prebuilt dependencies
+      # Locate gradlew (file or symlink) anywhere in repo
+      - name: Locate gradlew
+        id: locate
+        run: |
+          GRADLEW_PATH=$(find . -name gradlew \( -type f -o -type l \) | head -n 1)
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "::error::gradlew not found (searched for files and symlinks)"
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$GRADLEW_PATH")
+          echo "gradlew_path=$GRADLEW_PATH" >> $GITHUB_OUTPUT
+          echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
+          echo "Found gradlew at: $GRADLEW_PATH"
+          echo "Project directory: $PROJECT_DIR"
+
+      # Run dependency download script if it exists (from project dir)
+      - name: Download prebuilt dependencies (if any)
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
           if [ -f ./download_dependencies.sh ]; then
             chmod +x ./download_dependencies.sh
@@ -63,25 +77,25 @@ jobs:
             echo "No dependency download script found. Skipping."
           fi
 
-      # 6. Cache Gradle dependencies to speed up future builds
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles(format('{0}/**/*.gradle*', steps.locate.outputs.project_dir), format('{0}/gradle/wrapper/gradle-wrapper.properties', steps.locate.outputs.project_dir)) }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      # 7. Build the debug APK
-      - name: Build with Gradle
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Build debug APK
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
 
-      # 8. Upload the APK as an artifact
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Winlator-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.locate.outputs.project_dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
