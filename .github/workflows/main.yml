@@ -1,1 +1,87 @@
+name: Build Winlator APK
 
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:          # Allow manual triggering
+
+jobs:
+  build:
+    name: Build Debug APK
+    runs-on: ubuntu-latest    # GitHub's Ubuntu runner (20.04/22.04)
+
+    steps:
+      # 1. Checkout the repository including submodules
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive   # Fetch all git submodules
+
+      # 2. Set up Java (Winlator usually needs JDK 17)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 3. Set up Android SDK (includes required platform-tools and build-tools)
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 4. Install system dependencies needed for native builds
+      #    (Adjust this list if your fork requires different packages)
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake ninja-build meson \
+            mingw-w64 \
+            libglib2.0-dev \
+            libgcrypt20-dev \
+            libpixman-1-dev \
+            flex bison \
+            gettext \
+            pkg-config \
+            automake autoconf libtool \
+            python3-pip \
+            unzip zip
+
+      # 5. (Optional) Run a script to download prebuilt Wine/Box64 binaries
+      #    Many Winlator forks include a script like "download_dependencies.sh"
+      #    If your repo has one, execute it here. Otherwise remove this step.
+      - name: Download prebuilt dependencies
+        run: |
+          if [ -f ./download_dependencies.sh ]; then
+            chmod +x ./download_dependencies.sh
+            ./download_dependencies.sh
+          elif [ -f ./download.sh ]; then
+            chmod +x ./download.sh
+            ./download.sh
+          else
+            echo "No dependency download script found. Skipping."
+          fi
+
+      # 6. Cache Gradle dependencies to speed up future builds
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # 7. Build the debug APK
+      - name: Build with Gradle
+        run: ./gradlew assembleDebug --no-daemon
+
+      # 8. Upload the APK as an artifact
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Winlator-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
